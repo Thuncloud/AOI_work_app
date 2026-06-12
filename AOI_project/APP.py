@@ -1,3 +1,5 @@
+import streamlit as st
+
 # 用字典把類別與功能綁定
 ALGORITHM_CATEGORIES = {
     "灰階與降噪": ["轉為灰階", "顏色翻轉", "高斯模糊 (濾波)", "中值濾波 (去噪)"],
