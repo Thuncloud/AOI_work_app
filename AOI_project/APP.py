@@ -1,23 +1,14 @@
-import streamlit as st
+# 用字典把類別與功能綁定
+ALGORITHM_CATEGORIES = {
+    "灰階與降噪": ["轉為灰階", "顏色翻轉", "高斯模糊 (濾波)", "中值濾波 (去噪)"],
+    "特徵提取": ["Canny 邊緣檢測", "二值化處理", "Hough 直線偵測", "方向性邊緣偵測", "圓圈檢測"],
+    "頻域處理": ["低通濾波", "高通濾波", "帶通/帶拒"]
+}
 
-st.title("🔬 AOI 演算法平台")
+# 把所有功能攤平成一個大列表供 multiselect 使用
+all_options = []
+for category, steps in ALGORITHM_CATEGORIES.items():
+    all_options.extend(steps)
 
-# 在主畫面或側邊欄建立分頁
-tab1, tab2, tab3 = st.tabs(["🖼️ 空間域點/鄰域運算", "🔍 幾何與特徵偵測", "🌊 傅立葉頻域分析"])
-
-with tab1:
-    st.subheader("影像基礎前處理")
-    # 這裡放 灰階、翻轉、高斯模糊的控制拉桿與開關
-    blur_on = st.checkbox("啟用高斯模糊")
-    if blur_on:
-        k_size = st.slider("核大小", 1, 15, 5, step=2)
-
-with tab2:
-    st.subheader("邊緣與形狀提取")
-    # 這裡放 Canny、Hough 直線、圓圈偵測的控制項
-    canny_on = st.checkbox("啟用 Canny 邊緣偵測")
-
-with tab3:
-    st.subheader("頻率域遮罩過濾")
-    # 這裡放 理想/高斯/巴特沃斯 濾波器
-    fft_mode = st.radio("濾波模式", ["低通", "高通", "帶通"])
+# 渲染到畫面上
+selected_steps = st.multiselect("請依序選擇處理步驟：", all_options)
