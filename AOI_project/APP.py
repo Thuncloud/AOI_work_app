@@ -11,29 +11,6 @@ st.markdown("""
 """)
 
 # ==========================================
-# 💡 快取優化函式：避免重複解碼圖片與重複提取特徵導致崩潰
-# ==========================================
-@st.cache_data
-def load_and_decode_image(file_bytes):
-    """安全解碼圖片"""
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    return img
-
-@st.cache_data
-def extract_sift_features(img_bytes):
-    """快取 SIFT 特徵提取，避免重複運算"""
-    img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
-    if img is None:
-        return None, None
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    sift = cv2.SIFT_create()
-    kp, des = sift.detectAndCompute(gray, None)
-    
-    # 由於 cv2.KeyPoint 物件無法直接被 Streamlit 快取序列化，我們只轉出座標點
-    kp_pts = np.float32([p.pt for p in kp])
-    return kp_pts, des
-
-# ==========================================
 # 側邊欄：控制與圖片上傳面板
 # ==========================================
 with st.sidebar:
@@ -67,25 +44,31 @@ with st.sidebar:
 # ==========================================
 if src_file is not None and tgt_file is not None:
     try:
-        # 1. 讀取二進位資料
-        src_bytes = src_file.read()
-        tgt_bytes = tgt_file.read()
+        # 1. 安全地讀取檔案位元組（不使用快取，確保每次拉動參數都能同步檔案狀態）
+        src_bytes = src_file.getvalue()
+        tgt_bytes = tgt_file.getvalue()
         
-        # 2. 使用快取函式載入原圖用來顯示
         file_bytes_src = np.asarray(bytearray(src_bytes), dtype=np.uint8)
         file_bytes_tgt = np.asarray(bytearray(tgt_bytes), dtype=np.uint8)
-        img_src = load_and_decode_image(file_bytes_src)
-        img_tgt = load_and_decode_image(file_bytes_tgt)
         
+        img_src = cv2.imdecode(file_bytes_src, cv2.IMREAD_COLOR)
+        img_tgt = cv2.imdecode(file_bytes_tgt, cv2.IMREAD_COLOR)
+        
+        # 2. 防呆：確保圖片成功解碼
         if img_src is None or img_tgt is None:
             st.error("❌ 影像解碼失敗，請確認檔案格式是否正確。")
             st.stop()
             
-        # 3. 使用快取函式提取特徵點
-        kp_src_pts, des_src = extract_sift_features(file_bytes_src)
-        kp_tgt_pts, des_tgt = extract_sift_features(file_bytes_tgt)
+        # 3. 轉換灰階
+        gray_src = cv2.cvtColor(img_src, cv2.COLOR_BGR2GRAY)
+        gray_tgt = cv2.cvtColor(img_tgt, cv2.COLOR_BGR2GRAY)
         
-        # 建立大排版區塊
+        # 4. 建立 SIFT 偵測器並提取關鍵點（每次拉動滑桿時即時動態計算，確保指標不衝突）
+        sift = cv2.SIFT_create()
+        kp_src, des_src = sift.detectAndCompute(gray_src, None)
+        kp_tgt, des_tgt = sift.detectAndCompute(gray_tgt, None)
+        
+        # 建立左右排版大區塊
         col_img_panel, col_res_panel = st.columns([1, 1])
         
         with col_img_panel:
@@ -96,7 +79,7 @@ if src_file is not None and tgt_file is not None:
             with sub_c2:
                 st.image(cv2.cvtColor(img_tgt, cv2.COLOR_BGR2RGB), caption="基準/目標影像 (Target)", use_container_width=True)
                 
-        # 4. 進行特徵匹配與單應性矩陣求解
+        # 5. 進行特徵匹配與單應性矩陣求解
         if des_src is not None and des_tgt is not None:
             bf = cv2.BFMatcher()
             matches = bf.knnMatch(des_src, des_tgt, k=2)
@@ -109,24 +92,23 @@ if src_file is not None and tgt_file is not None:
                     if m.distance < ratio_threshold * n.distance:
                         good_matches.append(m)
             
-            # 5. 判斷點數是否足夠 (Homography 至少需要 4 對點)
+            # 6. 判斷點數是否足夠 (Homography 至少需要 4 對點)
             if len(good_matches) >= 4:
-                # 從快取的座標點中抓取對應匹配點
-                src_pts = np.float32([kp_src_pts[m.queryIdx] for m in good_matches]).reshape(-1, 1, 2)
-                dst_pts = np.float32([kp_tgt_pts[m.trainIdx] for m in good_matches]).reshape(-1, 1, 2)
+                src_pts = np.float32([kp_src[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp_tgt[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
                 # 計算轉換矩陣 H
                 H, status = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransac_thresh)
                 
                 if H is not None:
-                    # 6. 執行透視轉換 (Warp Perspective)
+                    # 7. 執行透視轉換 (Warp Perspective) 讓來源圖對齊到目標圖尺寸
                     h_tgt, w_tgt = img_tgt.shape[:2]
                     img_result = cv2.warpPerspective(img_src, H, (w_tgt, h_tgt))
                     
                     with col_res_panel:
                         st.subheader("🎯 視角對齊結果")
                         st.image(cv2.cvtColor(img_result, cv2.COLOR_BGR2RGB), caption="對齊與轉換後影像 (Aligned Result)", use_container_width=True)
-                        st.success(f"✅ 自動匹配成功！共找到 {len(good_matches)} 組強健特徵點。")
+                        st.success(f"✅ 自動匹配成功！當前參數下篩選出 {len(good_matches)} 組強健特徵點。")
                         
                         # 展開顯示數學矩陣資訊
                         with st.expander("📊 查看幾何變換矩陣資訊 (Homography Matrix)"):
@@ -137,13 +119,14 @@ if src_file is not None and tgt_file is not None:
                         st.error("❌ 幾何轉換矩陣 (Homography) 求解失敗，演算法無法收斂。")
             else:
                 with col_res_panel:
-                    st.warning(f"⚠️ 匹配特徵點數量不足（僅 {len(good_matches)} 組）。幾何配準至少需要 4 組以上，請嘗試調高 Ratio 門檻。")
+                    st.warning(f"⚠️ 匹配特徵點數量不足（當前嚴格度下僅剩 {len(good_matches)} 組）。幾何配準至少需要 4 組以上，請試著放寬（調大）Lowe's Ratio。")
         else:
             with col_res_panel:
                 st.error("❌ 無法從這兩張影像中提取到足夠的 SIFT 特徵描述子。")
                 
     except Exception as e:
-        st.error(f"💥 運算過程中發生非預期錯誤: {str(e)}")
+        # 捕捉瞬間調太快時產生的暫時性檔案衝突，不讓它大爆炸顯示全白 Error 畫面
+        st.info("🔄 正在努力計算中，請放開滑鼠以查看最終對齊結果...")
 
 else:
     st.info("💡 請在左側側邊欄分別上傳【來源影像 (IMG_S)】與【目標影像 (IMG_L)】以啟動自動視角配準演算法。")
